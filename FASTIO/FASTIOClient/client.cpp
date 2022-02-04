@@ -1,0 +1,225 @@
+#define WIN32_LEAN_AND_MEAN
+
+#include <cryptlib.h>
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include "FASTIOClient.h"
+#include "osrng.h"
+#include <iostream>
+#include "hex.h"
+#include <chrono>
+
+
+// Need to link with Ws2_32.lib, Mswsock.lib, and Advapi32.lib
+#pragma comment (lib, "Ws2_32.lib")
+#pragma comment (lib, "Mswsock.lib")
+#pragma comment (lib, "AdvApi32.lib")
+
+
+#define DEFAULT_BUFLEN 98
+#define DEFAULT_PORT "27015"
+
+using CryptoPP::byte;
+using namespace CryptoPP;
+using namespace std;
+using std::chrono::high_resolution_clock;
+using std::chrono::duration_cast;
+using std::chrono::duration;
+using std::chrono::milliseconds;
+
+int __cdecl main(int argc, char** argv)
+{
+    FASTIOClient testClient;
+    const char* keyword = "Help";
+    byte add[3] = { 0x61, 0x64, 0x64 };
+    byte del[3] = { 0x64, 0x65, 0x6c };
+    byte ind[61];
+    int addSize = 1000;
+    int sleep = 5000;
+    AutoSeededRandomPool rng;
+    WSADATA wsaData;
+    SOCKET ConnectSocket = INVALID_SOCKET;
+    struct addrinfo* result = NULL,
+        * ptr = NULL,
+        hints;
+    const char* sendbuf = "U";
+    char recvbuf[DEFAULT_BUFLEN];
+    int iResult;
+    int recvbuflen = DEFAULT_BUFLEN;
+
+    // Validate the parameters
+    if (argc != 2) {
+        printf("usage: %s server-name\n", argv[0]);
+        return 1;
+    }
+
+    // Initialize Winsock
+    iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (iResult != 0) {
+        printf("WSAStartup failed with error: %d\n", iResult);
+        return 1;
+    }
+
+    ZeroMemory(&hints, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    // Resolve the server address and port
+    iResult = getaddrinfo(argv[1], DEFAULT_PORT, &hints, &result);
+    if (iResult != 0) {
+        printf("getaddrinfo failed with error: %d\n", iResult);
+        WSACleanup();
+        return 1;
+    }
+
+    // Attempt to connect to an address until one succeeds
+    for (ptr = result; ptr != NULL;ptr = ptr->ai_next) {
+
+        // Create a SOCKET for connecting to server
+        ConnectSocket = socket(ptr->ai_family, ptr->ai_socktype,
+            ptr->ai_protocol);
+        if (ConnectSocket == INVALID_SOCKET) {
+            printf("socket failed with error: %ld\n", WSAGetLastError());
+            WSACleanup();
+            return 1;
+        }
+
+        // Connect to server.
+        iResult = connect(ConnectSocket, ptr->ai_addr, (int)ptr->ai_addrlen);
+        if (iResult == SOCKET_ERROR) {
+            closesocket(ConnectSocket);
+            ConnectSocket = INVALID_SOCKET;
+            continue;
+        }
+        break;
+    }
+
+    freeaddrinfo(result);
+
+    if (ConnectSocket == INVALID_SOCKET) {
+        printf("Unable to connect to server!\n");
+        WSACleanup();
+        return 1;
+    }
+
+    //Inform server to update
+    iResult = send(ConnectSocket, sendbuf, (int)strlen(sendbuf), 0);
+    if (iResult == SOCKET_ERROR) {
+        printf("send failed with error: %d\n", WSAGetLastError());
+        closesocket(ConnectSocket);
+        WSACleanup();
+        return 1;
+    }
+    for (int a = 0; a < addSize; a++) {
+        rng.GenerateBlock(ind, sizeof(ind));
+        auto t1 = high_resolution_clock::now();
+        array<byte, 96> c = testClient.Update(keyword, ind, add);
+        byte u[96];
+        for (int a = 0; a < 96; a++) {
+            u[a] = c[a];
+        }
+        HexEncoder encoder;
+        string output;
+        encoder.Attach(new StringSink(output));
+        encoder.Put(u, sizeof(u));
+        encoder.MessageEnd();
+        sendbuf = output.c_str();
+        iResult = send(ConnectSocket, sendbuf, (int)strlen(sendbuf), 0);
+        if (iResult == SOCKET_ERROR) {
+            printf("send failed with error: %d\n", WSAGetLastError());
+            closesocket(ConnectSocket);
+            WSACleanup();
+            return 1;
+        }
+        auto t2 = high_resolution_clock::now();
+        duration<double, std::milli> ms_double = t2 - t1;
+        cout << ms_double.count() << endl;
+    }
+    Sleep(sleep);
+    //Change to a search
+    sendbuf = "S";
+    iResult = send(ConnectSocket, sendbuf, (int)strlen(sendbuf), 0);
+    if (iResult == SOCKET_ERROR) {
+        printf("send failed with error: %d\n", WSAGetLastError());
+        closesocket(ConnectSocket);
+        WSACleanup();
+        return 1;
+    }
+    Sleep(sleep);
+    array<byte, 51> s = testClient.Search(keyword);
+    bool check = false;
+    for (int a = 0; a < 51; a++) {
+        if (s[a] != 0x00) {
+            check = true;
+            break;
+        }
+    }
+    if (!check) {
+        cout << "Search not found" << endl;
+    }
+    else {
+        cout << "Found keyword" << endl;
+        byte u[51];
+        for (int a = 0; a < 51; a++) {
+            u[a] = s[a];
+        }
+        HexEncoder encoder;
+        string output;
+        encoder.Attach(new StringSink(output));
+        encoder.Put(u, sizeof(u));
+        encoder.MessageEnd();
+        sendbuf = output.c_str();
+        iResult = send(ConnectSocket, sendbuf, (int)strlen(sendbuf), 0);
+        if (iResult == SOCKET_ERROR) {
+            printf("send failed with error: %d\n", WSAGetLastError());
+            closesocket(ConnectSocket);
+            WSACleanup();
+            return 1;
+        }
+    }
+
+    // shutdown the connection since no more data will be sent
+    iResult = shutdown(ConnectSocket, SD_SEND);
+    if (iResult == SOCKET_ERROR) {
+        printf("shutdown failed with error: %d\n", WSAGetLastError());
+        closesocket(ConnectSocket);
+        WSACleanup();
+        return 1;
+    }
+
+    // Receive until the peer closes the connection
+    do {
+
+        iResult = recv(ConnectSocket, recvbuf, recvbuflen, 0);
+        if (iResult > 0) {
+            printf("Bytes received: %d\n", iResult);
+            string encoded = recvbuf;
+            string decoded;
+            StringSource ss(encoded, true, new HexDecoder(new StringSink(decoded)));
+            const byte* result = (const byte*)decoded.data();
+            array<byte, 61> c;
+            for (int a = 0; a < 61; a++) {
+                c[a] = result[a];
+            }
+            for (int j = 0; j < 61; j++) {
+                testClient.printC(c[j]);
+            }
+            cout << endl;
+        }
+        else if (iResult == 0)
+            printf("Connection closed\n");
+        else
+            printf("recv failed with error: %d\n", WSAGetLastError());
+
+    } while (iResult > 0);
+
+    // cleanup
+    closesocket(ConnectSocket);
+    WSACleanup();
+
+    return 0;
+}
