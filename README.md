@@ -5,3 +5,4 @@ Forward Private Searchable Symmetric Encryption with Optimized I/O Efficiency
 by
 Xiangfu Song, Changyu Dong, Dandan Yuan, Qiuliang Xu and Minghao Zhao
 
+Uses x64 Release for setup and must have CryptoPP package linked through settings
